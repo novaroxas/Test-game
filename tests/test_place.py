@@ -31,6 +31,7 @@ class PlaceTests(unittest.TestCase):
             expected = [
                 (child(shared, "Config"), "ModuleScript", "src/shared/Config.lua"),
                 (child(shared, "Rules"), "ModuleScript", "src/shared/Rules.lua"),
+                (child(shared, "Presentation"), "ModuleScript", "src/shared/Presentation.lua"),
                 (child(server, "Game"), "Script", "src/server/Game.server.lua"),
                 (child(server, "Arena"), "ModuleScript", "src/server/Arena.lua"),
                 (child(client, "Interface"), "LocalScript", "src/client/Interface.client.lua"),

@@ -37,7 +37,7 @@ local arena = {
     place = function() arenaState.placed = arenaState.placed + 1 end,
     bot = function() return {} end,
     release = function() arenaState.released = arenaState.released + 1 end,
-    animate = function() end,
+    bindLobby = function(_, callback) arenaState.lobbyAction = callback end,
     clearProps = function() end,
     reveal = function() arenaState.reveals = arenaState.reveals + 1 end,
 }
@@ -126,9 +126,11 @@ check(#sent[a] == before, "cannot change locked choice")
 choose(b, "Scissors")
 check(latest(a).phase == "reveal" and latest(a).result == "win", "winning reveal")
 check(latest(a).myChoice == "Rock" and latest(b).opponentChoice == "Rock", "reveal publishes choices")
+check(type(latest(a).revealAt) == "number" and latest(a).revealAt == latest(b).revealAt, "shared reveal clock")
 check(latest(a).myScore == 1 and latest(b).opponentScore == 1, "perspective scores")
 advance(config.RevealSeconds)
 check(latest(a).round == 2 and not latest(a).myReady, "next round resets lock")
+check(latest(a).revealAt == nil, "reveal timestamp resets")
 choose(a, "Paper")
 choose(b, "Paper")
 check(latest(a).result == "tie" and latest(a).myScore == 1, "ties do not add points")
@@ -182,6 +184,14 @@ advance(config.RevealSeconds)
 check(latest(c).phase == "finished" and latest(c).result == "tie", "idle match ends after three timeouts")
 advance(config.MatchEndSeconds)
 check(latest(c).phase == "lobby" and latest(d).phase == "lobby", "idle arena cleaned up")
+advance(0.2)
+arenaState.lobbyAction(c, "Queue")
+check(latest(c).phase == "queued", "physical matchmaking kiosk queues player")
+c.CharacterRemoving:Fire()
+check(latest(c).phase == "lobby", "queued reset clears waiting UI")
+advance(0.2)
+arenaState.lobbyAction(d, "Practice")
+check(latest(d).phase == "choosing" and latest(d).opponent == config.BotName, "physical practice kiosk starts match")
 local e = player("Loading")
 e.Character = nil
 fire(e, "Practice")

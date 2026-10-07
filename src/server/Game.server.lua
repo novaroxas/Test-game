@@ -42,7 +42,7 @@ local function broadcast(match, phase, extra)
                 phase = phase, matchId = match.id, round = match.round, seat = i,
                 me = player.DisplayName, opponent = opponent and opponent.DisplayName or Config.BotName,
                 myScore = match.scores[i], opponentScore = match.scores[3 - i],
-                goal = Config.PointsToWin, deadline = match.deadline,
+                goal = Config.PointsToWin, deadline = match.deadline, revealAt = match.revealAt,
                 myReady = match.choices[i] ~= nil, opponentReady = match.choices[3 - i] ~= nil,
                 camera = match.arena.center,
             }
@@ -72,17 +72,17 @@ finish = function(match, winner, reason)
     broadcast(match, "finished", function(i)
         return { result = winner == 0 and "tie" or (winner == i and "win" or "lose"), reason = reason or "Match complete!" }
     end)
-    if winner and winner ~= 0 then Arena.animate(match.arena, winner, true) end
     task.delay(Config.MatchEndSeconds, function() cleanup(match) end)
 end
 
 reveal = function(match)
     if not match.alive or match.phase ~= "choosing" then return end
     match.phase = "reveal"
+    match.revealAt = workspace:GetServerTimeNow()
     local winner = Rules.winner(match.choices[1], match.choices[2])
     match.idleRounds = (not match.choices[1] and not match.choices[2]) and (match.idleRounds + 1) or 0
     if winner ~= 0 then match.scores[winner] = match.scores[winner] + 1 end
-    Arena.reveal(match.arena, match.choices, winner)
+    Arena.reveal(match.arena, match.choices, match.round)
     broadcast(match, "reveal", function(i)
         return {
             myChoice = match.choices[i] or "Time out",
@@ -106,6 +106,7 @@ end
 startRound = function(match)
     if not match.alive then return end
     match.round, match.phase, match.choices = match.round + 1, "choosing", {}
+    match.revealAt = nil
     match.deadline = workspace:GetServerTimeNow() + Config.ChoiceSeconds
     Arena.clearProps(match.arena)
     broadcast(match, "choosing")
@@ -148,7 +149,7 @@ local function startMatch(first, second)
     startRound(match)
 end
 
-action.OnServerEvent:Connect(function(player, kind, payload)
+local function handleAction(player, kind, payload)
     if type(kind) ~= "string" then return end
     local now = os.clock()
     if lastRequest[player] and now - lastRequest[player] < 0.1 then return end
@@ -192,12 +193,18 @@ action.OnServerEvent:Connect(function(player, kind, payload)
         table.insert(queue, player)
         send(player, { phase = "queued" })
     end
-end)
+end
+action.OnServerEvent:Connect(handleAction)
+Arena.bindLobby(world, handleAction)
 
 local function abandon(player)
     removeQueued(player)
     local match = active[player]
-    if match and match.alive then finish(match, 3 - indexOf(match, player), "Duel ended after a disconnect or character reset.") end
+    if match and match.alive then
+        finish(match, 3 - indexOf(match, player), "Duel ended after a disconnect or character reset.")
+    else
+        send(player, { phase = "lobby" })
+    end
 end
 
 local function bindPlayer(player)

@@ -1,8 +1,9 @@
 # Hand Clash
 
-A small Roblox rock-paper-scissors game with a neon arena, animated character
-reactions, 3D choice reveals, and a responsive interface. Play against ROBO on
-your own, or queue for a duel against another player in the same server.
+A small Roblox rock-paper-scissors game with a landscaped lounge, a neon arena,
+smooth character reactions, 3D choice reveals, and a responsive interface.
+Play against ROBO on your own, or queue for a duel against another player in
+the same server.
 
 ## Play in Roblox Studio
 
@@ -11,11 +12,19 @@ your own, or queue for a duel against another player in the same server.
    the extracted folder. The place file is included; no build tools are needed
    to play it.
 2. Open the file in **Roblox Studio** using **File → Open from File**.
-3. Press **Play** and select **Practice / VS ROBO**.
+3. Press Studio's **Play** button and select **Practice with ROBO** in the game
+   menu. You can reopen the menu with the small **Play** button in the corner.
 4. Click or tap **Rock**, **Paper**, or **Scissors**. On desktop, you can also
    press **1**, **2**, or **3**.
 5. To test multiplayer, use Studio's **Test** tab to start a local server with
-   **2 clients**. Select **Find a Player** in both client windows.
+   **2 clients**. Select **Find a match** in both client windows.
+
+The lounge has benches you can sit on, planters, warm lamps, a central sculpture,
+and two play kiosks. Close the menu to explore. Walk to a kiosk and use its
+prompt (press **E** on desktop or tap on mobile) to practice or queue. While
+waiting for another player, you can keep walking around or sitting in the
+lounge; a compact queue panel lets you cancel at any time. Matches start
+automatically when an opponent joins.
 
 The arena and interface are created automatically when the game starts. No
 asset uploads, plugins, API keys, external services, or paid assets are needed.
@@ -33,6 +42,9 @@ Use Studio's normal **Publish to Roblox** flow when you want to release it.
 - Leaving, resetting your character, or disconnecting forfeits the match.
 - ROBO chooses independently before receiving your choice.
 - Completed matches return you to the lobby automatically.
+- Reveals use three synchronized hand beats before the choice props, scores,
+  and result appear. Motion runs locally at render frequency, with eased props,
+  gentle idle movement, winner reactions, and fading camera transitions.
 - Matchmaking is local to the current server. Scores reset for each match.
 
 ## Edit the game
@@ -41,6 +53,7 @@ Use Studio's normal **Publish to Roblox** flow when you want to release it.
 | --- | --- |
 | `src/shared/Config.lua` | Title, points required, timer lengths, and bot name |
 | `src/shared/Rules.lua` | Choice validation and win rules |
+| `src/shared/Presentation.lua` | Smooth local character and reveal animation |
 | `src/server/Game.server.lua` | Matchmaking, private choices, timers, cleanup |
 | `src/server/Arena.lua` | Lobby, arena, ROBO, props, and character animations |
 | `src/client/Interface.client.lua` | UI, camera, keyboard input, and confetti |
@@ -74,6 +87,7 @@ Run from the repository root using a Lua 5.3-compatible interpreter:
 ```sh
 lua tests/rules.spec.lua
 lua tests/server.spec.lua
+lua tests/presentation.spec.lua
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
@@ -87,10 +101,13 @@ still need the Studio checks below; the automated tests do not verify those.
 
 ### Studio checks
 
-- Play solo: complete a practice match, watch the reveal props and character
+- Play solo: explore the lounge, sit on a bench, then start practice at a kiosk.
+  Complete a match, watch the reveal props and character
   reactions, and confirm the camera and movement return to normal in the lobby.
 - Start two clients: queue both, verify the cyan player appears on the left and
   pink player on the right, and play a complete match.
+- Queue just one client first: walk and sit in the lounge while waiting, cancel
+  the queue, then requeue. Reset while queued and verify the queue panel clears.
 - Select a choice in one client first: the other client should only see a
   readiness message, never the selected choice before the reveal.
 - Leave a round without choosing and check the timeout result. Stop one client

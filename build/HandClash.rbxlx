@@ -24,10 +24,11 @@
         <Properties>
           <string name="Name">Config</string>
           <ProtectedString name="Source">return {
-    Title = "HAND CLASH",
+    Title = "Hand Clash",
     PointsToWin = 3,
     ChoiceSeconds = 7,
     RevealSeconds = 2.8,
+    RevealWindup = 0.72,
     MatchEndSeconds = 4,
     BotName = "ROBO",
     Choices = { "Rock", "Paper", "Scissors" },
@@ -36,6 +37,127 @@
         </Properties>
       </Item>
       <Item class="ModuleScript" referent="RBX6">
+        <Properties>
+          <string name="Name">Presentation</string>
+          <ProtectedString name="Source">-- All visual motion runs locally at render frequency; scoring stays on the server.
+local Presentation = {}
+Presentation.__index = Presentation
+
+function Presentation.new(windup)
+    return setmetatable({ actors = {}, props = {}, windup = windup }, Presentation)
+end
+
+function Presentation:stop()
+    for _, actor in pairs(self.actors) do
+        if actor.root.Parent and actor.root.Anchored then actor.root.CFrame = actor.base end
+        for _, shoulder in ipairs(actor.shoulders) do
+            if shoulder.joint.Parent then shoulder.joint.C0 = shoulder.base end
+        end
+        if actor.animate and actor.animate.Parent then actor.animate.Disabled = actor.wasDisabled end
+    end
+    self.actors, self.props, self.packet = {}, {}, nil
+end
+
+function Presentation:set(packet)
+    if packet.phase == "lobby" or packet.phase == "queued" then self:stop(); return end
+    if self.packet and packet.matchId ~= self.packet.matchId then self:stop() end
+    if not self.packet or packet.round ~= self.packet.round then self.props = {} end
+    if not self.packet or packet.phase ~= self.packet.phase then self.phaseAt = workspace:GetServerTimeNow() end
+    self.packet = packet
+end
+
+function Presentation:discover()
+    local world = workspace:FindFirstChild("HandClashWorld")
+    local arena = world and world:FindFirstChild("Duel_" .. self.packet.matchId)
+    if not arena then return end
+    for i = 1, 2 do
+        if not self.actors[i] then
+            local reference, pose = arena:FindFirstChild("Fighter" .. i), arena:FindFirstChild("Pose" .. i)
+            local rig = reference and reference.Value
+            local root = rig and rig:FindFirstChild("HumanoidRootPart")
+            if root and pose then
+                local actor = { root = root, base = pose.Value, shoulders = {} }
+                for _, joint in ipairs(rig:GetDescendants()) do
+                    if joint:IsA("Motor6D") then
+                        local right = joint.Name == "RightShoulder" or joint.Name == "Right Shoulder"
+                        local left = joint.Name == "LeftShoulder" or joint.Name == "Left Shoulder"
+                        if right or left then table.insert(actor.shoulders, { joint = joint, base = joint.C0, right = right }) end
+                    end
+                end
+                local animate = rig:FindFirstChild("Animate")
+                if animate and animate:IsA("LocalScript") then
+                    actor.animate, actor.wasDisabled = animate, animate.Disabled
+                    animate.Disabled = true
+                end
+                self.actors[i] = actor
+            end
+        end
+        if self.packet.phase == "reveal" and not self.props[i] then
+            local model = arena:FindFirstChild("Choice" .. i)
+            if model and model.PrimaryPart and model:GetAttribute("Round") == self.packet.round then
+                self.props[i] = { model = model, base = model:GetPivot(), pieces = model:GetDescendants() }
+            end
+        end
+    end
+end
+
+function Presentation:step(dt)
+    local packet = self.packet
+    if not packet then return end
+    self:discover() -- References and props may replicate after their state packet.
+    local now = workspace:GetServerTimeNow()
+    local time = math.max(0, now - (packet.revealAt or self.phaseAt))
+    local blend = 1 - math.exp(-14 * dt)
+    local winner = packet.result == "tie" and 0 or (packet.result == "win" and packet.seat or 3 - packet.seat)
+    for i, actor in pairs(self.actors) do
+        if actor.root.Parent and actor.root.Anchored then
+            local bob = math.sin(now * 2 + i) * 0.045
+            local lean, arm = 0, 0
+            if packet.phase == "reveal" then
+                if time &lt; self.windup then
+                    local beat = math.sin(time / self.windup * math.pi * 6)
+                    bob, arm = bob + beat * 0.07, -30 + beat * 16
+                else
+                    local reaction = time - self.windup
+                    arm = i == winner and -72 or -35
+                    if i == winner then
+                        bob = bob + math.abs(math.sin(reaction * 5)) * math.exp(-reaction * 1.7) * 0.45
+                        lean = math.sin(reaction * 4) * math.exp(-reaction * 1.7) * 5
+                    end
+                end
+            elseif packet.phase == "finished" and i == winner then
+                arm = -115
+                bob = bob + math.sin(time * 4) * 0.12
+            end
+            actor.root.CFrame = actor.root.CFrame:Lerp(actor.base * CFrame.new(0, bob, 0) * CFrame.Angles(0, 0, math.rad(lean)), blend)
+            for _, shoulder in ipairs(actor.shoulders) do
+                local angle = shoulder.right and arm or (packet.phase == "finished" and i == winner and arm or 0)
+                local target = shoulder.base * CFrame.Angles(math.rad(angle), 0, 0)
+                shoulder.joint.C0 = shoulder.joint.C0:Lerp(target, blend)
+            end
+        end
+    end
+    if packet.phase == "reveal" then
+        local progress = math.clamp((time - self.windup) / 0.32, 0, 1)
+        local scale = math.max(0.01, 1 - (1 - progress) ^ 3)
+        for _, prop in pairs(self.props) do
+            if prop.model.Parent then
+                prop.model:ScaleTo(scale)
+                prop.model:PivotTo(prop.base * CFrame.new(0, math.sin(time * 2.4) * 0.13, 0) * CFrame.Angles(0, math.sin(time * 1.5) * 0.08, 0))
+                for _, piece in ipairs(prop.pieces) do
+                    if piece:IsA("BasePart") then piece.Transparency = progress &gt; 0 and 0 or 1 end
+                    if piece:IsA("BillboardGui") then piece.Enabled = progress &gt;= 0.9 end
+                end
+            end
+        end
+    end
+end
+
+return Presentation
+</ProtectedString>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="RBX7">
         <Properties>
           <string name="Name">Rules</string>
           <ProtectedString name="Source">local Rules = {}
@@ -67,11 +189,11 @@ return Rules
       </Item>
     </Item>
   </Item>
-  <Item class="ServerScriptService" referent="RBX7">
+  <Item class="ServerScriptService" referent="RBX8">
     <Properties>
       <string name="Name">ServerScriptService</string>
     </Properties>
-    <Item class="Script" referent="RBX8">
+    <Item class="Script" referent="RBX9">
       <Properties>
         <string name="Name">Game</string>
         <ProtectedString name="Source">local Players = game:GetService("Players")
@@ -118,7 +240,7 @@ local function broadcast(match, phase, extra)
                 phase = phase, matchId = match.id, round = match.round, seat = i,
                 me = player.DisplayName, opponent = opponent and opponent.DisplayName or Config.BotName,
                 myScore = match.scores[i], opponentScore = match.scores[3 - i],
-                goal = Config.PointsToWin, deadline = match.deadline,
+                goal = Config.PointsToWin, deadline = match.deadline, revealAt = match.revealAt,
                 myReady = match.choices[i] ~= nil, opponentReady = match.choices[3 - i] ~= nil,
                 camera = match.arena.center,
             }
@@ -148,17 +270,17 @@ finish = function(match, winner, reason)
     broadcast(match, "finished", function(i)
         return { result = winner == 0 and "tie" or (winner == i and "win" or "lose"), reason = reason or "Match complete!" }
     end)
-    if winner and winner ~= 0 then Arena.animate(match.arena, winner, true) end
     task.delay(Config.MatchEndSeconds, function() cleanup(match) end)
 end
 
 reveal = function(match)
     if not match.alive or match.phase ~= "choosing" then return end
     match.phase = "reveal"
+    match.revealAt = workspace:GetServerTimeNow()
     local winner = Rules.winner(match.choices[1], match.choices[2])
     match.idleRounds = (not match.choices[1] and not match.choices[2]) and (match.idleRounds + 1) or 0
     if winner ~= 0 then match.scores[winner] = match.scores[winner] + 1 end
-    Arena.reveal(match.arena, match.choices, winner)
+    Arena.reveal(match.arena, match.choices, match.round)
     broadcast(match, "reveal", function(i)
         return {
             myChoice = match.choices[i] or "Time out",
@@ -182,6 +304,7 @@ end
 startRound = function(match)
     if not match.alive then return end
     match.round, match.phase, match.choices = match.round + 1, "choosing", {}
+    match.revealAt = nil
     match.deadline = workspace:GetServerTimeNow() + Config.ChoiceSeconds
     Arena.clearProps(match.arena)
     broadcast(match, "choosing")
@@ -224,7 +347,7 @@ local function startMatch(first, second)
     startRound(match)
 end
 
-action.OnServerEvent:Connect(function(player, kind, payload)
+local function handleAction(player, kind, payload)
     if type(kind) ~= "string" then return end
     local now = os.clock()
     if lastRequest[player] and now - lastRequest[player] &lt; 0.1 then return end
@@ -268,12 +391,18 @@ action.OnServerEvent:Connect(function(player, kind, payload)
         table.insert(queue, player)
         send(player, { phase = "queued" })
     end
-end)
+end
+action.OnServerEvent:Connect(handleAction)
+Arena.bindLobby(world, handleAction)
 
 local function abandon(player)
     removeQueued(player)
     local match = active[player]
-    if match and match.alive then finish(match, 3 - indexOf(match, player), "Duel ended after a disconnect or character reset.") end
+    if match and match.alive then
+        finish(match, 3 - indexOf(match, player), "Duel ended after a disconnect or character reset.")
+    else
+        send(player, { phase = "lobby" })
+    end
 end
 
 local function bindPlayer(player)
@@ -288,11 +417,10 @@ end)
 </ProtectedString>
       </Properties>
     </Item>
-    <Item class="ModuleScript" referent="RBX9">
+    <Item class="ModuleScript" referent="RBX10">
       <Properties>
         <string name="Name">Arena</string>
-        <ProtectedString name="Source">local TweenService = game:GetService("TweenService")
-local Lighting = game:GetService("Lighting")
+        <ProtectedString name="Source">local Lighting = game:GetService("Lighting")
 local Arena = {}
 local blue = Color3.fromRGB(66, 200, 255)
 local pink = Color3.fromRGB(255, 101, 174)
@@ -320,25 +448,116 @@ local function sign(parent, text, cf, width, color)
     label.Parent = gui
 end
 
+local function solid(parent, name, size, cf, color, material)
+    local p = part(parent, name, size, cf, color, material)
+    p.CanCollide = true
+    return p
+end
+
+local function disk(parent, name, position, diameter, height, color, material)
+    local p = part(parent, name, Vector3.new(height, diameter, diameter), CFrame.new(position) * CFrame.Angles(0, 0, math.pi / 2), color, material)
+    p.Shape = Enum.PartType.Cylinder
+    return p
+end
+
+local function planter(parent, x, z)
+    solid(parent, "Planter", Vector3.new(7, 1.7, 7), CFrame.new(x, 0.85, z), Color3.fromRGB(49, 59, 78))
+    part(parent, "Soil", Vector3.new(6.5, 0.2, 6.5), CFrame.new(x, 1.75, z), Color3.fromRGB(37, 47, 47))
+    part(parent, "Trunk", Vector3.new(0.8, 4.4, 0.8), CFrame.new(x, 3.8, z), Color3.fromRGB(126, 103, 85), Enum.Material.Wood)
+    for i, offset in ipairs({ Vector3.new(-1.4, 0, 0), Vector3.new(1.4, 0.3, 0), Vector3.new(0, 1.6, 0) }) do
+        local crown = part(parent, "Foliage", Vector3.new(5, 4.5, 5), CFrame.new(Vector3.new(x, 6, z) + offset), i == 3 and Color3.fromRGB(101, 162, 139) or Color3.fromRGB(63, 120, 108))
+        crown.Shape = Enum.PartType.Ball
+    end
+end
+
+local function bench(parent, x, z, yaw)
+    local cf = CFrame.new(x, 0, z) * CFrame.Angles(0, math.rad(yaw), 0)
+    solid(parent, "BenchSeat", Vector3.new(7, 0.4, 2), cf * CFrame.new(0, 1.7, 0), Color3.fromRGB(164, 133, 113), Enum.Material.Wood)
+    solid(parent, "BenchBack", Vector3.new(7, 1.6, 0.3), cf * CFrame.new(0, 2.5, -0.9), Color3.fromRGB(164, 133, 113), Enum.Material.Wood)
+    for _, xOffset in ipairs({ -2.7, 2.7 }) do
+        solid(parent, "BenchLeg", Vector3.new(0.4, 1.6, 1.8), cf * CFrame.new(xOffset, 0.8, 0), dark)
+    end
+    local seat = Instance.new("Seat")
+    seat.Size, seat.CFrame = Vector3.new(3, 0.2, 1.6), cf * CFrame.new(0, 2, 0)
+    seat.Anchored, seat.Transparency, seat.Parent = true, 1, parent
+end
+
+local function kiosk(parent, x, title, subtitle, color, actionName)
+    local cf = CFrame.new(x, 0, -17)
+    local plinth = disk(parent, "KioskPad", cf.Position + Vector3.new(0, 0.2, 0), 11, 0.4, color, Enum.Material.Neon)
+    plinth.CanCollide = true
+    solid(parent, "Kiosk", Vector3.new(7, 4.2, 2), cf * CFrame.new(0, 2.3, -1), dark)
+    part(parent, "KioskTrim", Vector3.new(7.2, 0.15, 2.2), cf * CFrame.new(0, 4.5, -1), color, Enum.Material.Neon)
+    sign(parent, title, cf * CFrame.new(0, 7.5, -1), 15, color)
+    sign(parent, subtitle, cf * CFrame.new(0, 4.8, -0.7), 13, Color3.fromRGB(223, 230, 243))
+    local prompt = Instance.new("ProximityPrompt")
+    prompt.Name, prompt.ActionText, prompt.ObjectText = actionName, title, subtitle
+    prompt.KeyboardKeyCode, prompt.MaxActivationDistance = Enum.KeyCode.E, 10
+    prompt.HoldDuration, prompt.RequiresLineOfSight = 0, false
+    prompt.Parent = plinth
+end
+
 function Arena.init()
-    Lighting.ClockTime, Lighting.Brightness = 0, 2
-    Lighting.Ambient = Color3.fromRGB(120, 125, 160)
-    Lighting.OutdoorAmbient = Color3.fromRGB(80, 90, 125)
+    Lighting.ClockTime, Lighting.Brightness = 17.7, 2
+    Lighting.Ambient = Color3.fromRGB(122, 126, 157)
+    Lighting.OutdoorAmbient = Color3.fromRGB(100, 109, 139)
     local bloom = Instance.new("BloomEffect")
-    bloom.Intensity, bloom.Size, bloom.Threshold = 0.35, 24, 1
+    bloom.Intensity, bloom.Size, bloom.Threshold = 0.18, 20, 1.2
     bloom.Parent = Lighting
     local world = Instance.new("Folder")
     world.Name, world.Parent = "HandClashWorld", workspace
-    local floor = part(world, "Lobby", Vector3.new(70, 2, 70), CFrame.new(0, -1, 0), dark)
-    floor.CanCollide = true
+    local lobby = Instance.new("Model")
+    lobby.Name, lobby.Parent = "Lobby", world
+    solid(lobby, "Courtyard", Vector3.new(84, 2, 68), CFrame.new(0, -1, 0), Color3.fromRGB(41, 48, 66), Enum.Material.Concrete)
+    for _, x in ipairs({ -41, 41 }) do
+        solid(lobby, "SideRail", Vector3.new(1, 3.5, 68), CFrame.new(x, 1.75, 0), dark)
+        part(lobby, "RailLight", Vector3.new(0.15, 0.15, 65), CFrame.new(x, 3.6, 0), blue, Enum.Material.Neon)
+    end
+    solid(lobby, "RearWall", Vector3.new(84, 14, 1), CFrame.new(0, 7, -33), dark)
+    solid(lobby, "FrontRail", Vector3.new(84, 3.5, 1), CFrame.new(0, 1.75, 33), dark)
+    for z = -25, 25, 5 do
+        part(lobby, "WalkwayTile", Vector3.new(12, 0.08, 4.75), CFrame.new(0, 0.05, z), Color3.fromRGB(63, 72, 92), Enum.Material.Concrete)
+    end
+    for x = -30, 30, 5 do
+        part(lobby, "CrosswalkTile", Vector3.new(4.75, 0.07, 10), CFrame.new(x, 0.06, -3), Color3.fromRGB(63, 72, 92), Enum.Material.Concrete)
+    end
+    disk(lobby, "CenterLight", Vector3.new(0, 0.14, -3), 18, 0.1, blue, Enum.Material.Neon)
+    local center = disk(lobby, "CenterPlatform", Vector3.new(0, 0.25, -3), 17, 0.3, dark)
+    center.CanCollide = true
+    solid(lobby, "SculptureBase", Vector3.new(4, 0.8, 4), CFrame.new(0, 0.8, -3), Color3.fromRGB(77, 89, 110))
+    local sculpture = part(lobby, "ClashSculpture", Vector3.new(3.4, 3.4, 3.4), CFrame.new(0, 3.2, -3) * CFrame.Angles(math.rad(35), math.rad(45), math.rad(20)), Color3.fromRGB(161, 216, 226), Enum.Material.Glass)
+    sculpture.Transparency = 0.15
+    part(lobby, "SculptureAccent", Vector3.new(4, 0.12, 4), CFrame.new(0, 3.2, -3) * CFrame.Angles(math.rad(35), math.rad(45), math.rad(20)), pink, Enum.Material.Neon)
+    for _, x in ipairs({ -32, 32 }) do
+        for _, z in ipairs({ -25, 23 }) do planter(lobby, x, z) end
+        bench(lobby, x * 0.78, 12, x &lt; 0 and 90 or -90)
+    end
+    for _, x in ipairs({ -15, 15 }) do
+        for _, z in ipairs({ -27, 25 }) do
+            solid(lobby, "LampPost", Vector3.new(0.45, 7, 0.45), CFrame.new(x, 3.5, z), dark)
+            local lamp = part(lobby, "Lamp", Vector3.new(1.4, 0.7, 1.4), CFrame.new(x, 7, z), Color3.fromRGB(255, 228, 179), Enum.Material.Neon)
+            local light = Instance.new("PointLight")
+            light.Color, light.Brightness, light.Range, light.Parent = lamp.Color, 1.5, 18, lamp
+        end
+    end
     local spawn = Instance.new("SpawnLocation")
-    spawn.Size, spawn.CFrame = Vector3.new(8, 1, 8), CFrame.new(0, 0.5, 15)
+    spawn.Size, spawn.CFrame = Vector3.new(8, 0.2, 6), CFrame.new(0, 0.2, 22)
     spawn.Anchored, spawn.Neutral, spawn.Duration = true, true, 0
-    spawn.Color, spawn.Material = blue, Enum.Material.Neon
-    spawn.Parent = world
-    sign(world, "HAND CLASH", CFrame.new(0, 9, -15), 30, blue)
-    sign(world, "ROCK  /  PAPER  /  SCISSORS", CFrame.new(0, 5, -15), 30, pink)
+    spawn.Transparency, spawn.Parent = 1, lobby
+    sign(lobby, "Hand Clash", CFrame.new(0, 10, -32.3), 29, Color3.fromRGB(237, 243, 255))
+    sign(lobby, "Meet. Choose. Play.", CFrame.new(0, 6.5, -32.3), 24, blue)
+    kiosk(lobby, -20, "Practice", "Warm up with ROBO", blue, "Practice")
+    kiosk(lobby, 20, "Find a match", "Play another player", pink, "Queue")
+    sign(lobby, "The lounge", CFrame.new(-27, 6, 19) * CFrame.Angles(0, math.rad(35), 0), 12, Color3.fromRGB(222, 224, 235))
     return world
+end
+
+function Arena.bindLobby(world, callback)
+    for _, item in ipairs(world:GetDescendants()) do
+        if item:IsA("ProximityPrompt") then
+            item.Triggered:Connect(function(player) callback(player, item.Name) end)
+        end
+    end
 end
 
 function Arena.create(world, id)
@@ -357,7 +576,7 @@ function Arena.create(world, id)
         local pad = part(model, "PlayerPad", Vector3.new(6, 0.25, 6), CFrame.new(center + Vector3.new(x, 0.1, 0)), i == 1 and blue or pink, Enum.Material.Neon)
         pad.CanCollide = true
     end
-    sign(model, "CHOOSE. REVEAL. WIN.", CFrame.new(center + Vector3.new(0, 7, -10)), 27, Color3.fromRGB(240, 244, 255))
+    sign(model, "Make your move", CFrame.new(center + Vector3.new(0, 7, -10)), 27, Color3.fromRGB(240, 244, 255))
     return { model = model, center = center, spots = spots, props = {}, rigs = {}, shoulders = {}, movement = {} }
 end
 
@@ -377,8 +596,9 @@ function Arena.bot(arena)
     for _, info in ipairs(pieces) do
         local p = part(model, info[1], info[2], root.CFrame * CFrame.new(info[3]), info[4])
         p.Anchored = false
-        local weld = Instance.new("WeldConstraint")
-        weld.Part0, weld.Part1, weld.Parent = root, p, root
+        local joint = Instance.new("Motor6D")
+        joint.Name = info[1] == "Right Arm" and "RightShoulder" or (info[1] == "Left Arm" and "LeftShoulder" or info[1])
+        joint.Part0, joint.Part1, joint.C0, joint.Parent = root, p, CFrame.new(info[3]), root
     end
     model.PrimaryPart = root
     local face = Instance.new("BillboardGui")
@@ -395,10 +615,20 @@ end
 function Arena.place(arena, rig, index)
     local root = rig:FindFirstChild("HumanoidRootPart")
     if not root then return false end
+    local humanoid = rig:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        local seat = humanoid.SeatPart
+        local weld = seat and seat:FindFirstChild("SeatWeld")
+        if weld and weld.Part1 and weld.Part1:IsDescendantOf(rig) then weld:Destroy() end
+        humanoid.Sit = false
+    end
     root.Anchored = true
     rig:PivotTo(arena.spots[index])
     arena.rigs[index] = rig
-    local humanoid = rig:FindFirstChildOfClass("Humanoid")
+    local reference = Instance.new("ObjectValue")
+    reference.Name, reference.Value, reference.Parent = "Fighter" .. index, rig, arena.model
+    local pose = Instance.new("CFrameValue")
+    pose.Name, pose.Value, pose.Parent = "Pose" .. index, root.CFrame, arena.model
     if humanoid then
         arena.movement[index] = { speed = humanoid.WalkSpeed, jumpPower = humanoid.JumpPower, jumpHeight = humanoid.JumpHeight }
         humanoid.WalkSpeed, humanoid.JumpPower, humanoid.JumpHeight = 0, 0, 0
@@ -419,30 +649,15 @@ function Arena.clearProps(arena)
     arena.props = {}
 end
 
-function Arena.animate(arena, index, winner)
-    local rig = arena.rigs[index]
-    local root = rig and rig:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local base = arena.spots[index]
-    TweenService:Create(root, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 2, true), {
-        CFrame = base * CFrame.new(0, winner and 1.4 or 0.4, 0) * CFrame.Angles(0, 0, math.rad(winner and -8 or 5)),
-    }):Play()
-    local shoulder = arena.shoulders[index]
-    if shoulder then
-        TweenService:Create(shoulder.joint, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 2, true), {
-            C0 = shoulder.original * CFrame.Angles(math.rad(-70), 0, math.rad(20)),
-        }):Play()
-    end
-end
-
-function Arena.reveal(arena, choices, winner)
+function Arena.reveal(arena, choices, round)
     Arena.clearProps(arena)
     for i = 1, 2 do
         local choice = choices[i]
         local color = i == 1 and blue or pink
         local cf = CFrame.new(arena.center + Vector3.new(i == 1 and -3 or 3, 5.5, 2))
         local model = Instance.new("Model")
-        model.Name, model.Parent = "Choice", arena.model
+        model.Name, model.Parent = "Choice" .. i, arena.model
+        model:SetAttribute("Round", round)
         local core
         if choice == "Rock" then
             core = part(model, "Rock", Vector3.new(2, 2, 2), cf, color, Enum.Material.Slate)
@@ -463,15 +678,19 @@ function Arena.reveal(arena, choices, winner)
             core = part(model, "NoChoice", Vector3.new(1, 1, 1), cf, dark)
         end
         local gui = Instance.new("BillboardGui")
-        gui.Size, gui.StudsOffset, gui.AlwaysOnTop = UDim2.fromOffset(160, 38), Vector3.new(0, 2.2, 0), true
+        gui.Size, gui.StudsOffset, gui.AlwaysOnTop = UDim2.fromOffset(160, 32), Vector3.new(0, 1.7, 0), true
+        gui.Enabled = false
         gui.Adornee, gui.Parent = core, core
         local label = Instance.new("TextLabel")
         label.Size, label.BackgroundTransparency = UDim2.fromScale(1, 1), 1
-        label.Text, label.TextColor3 = choice or "TIME OUT", color
+        label.Text, label.TextColor3 = choice or "No move", color
         label.Font, label.TextScaled = Enum.Font.GothamBlack, true
         label.Parent = gui
+        model.PrimaryPart = core
+        for _, piece in ipairs(model:GetDescendants()) do
+            if piece:IsA("BasePart") then piece.Transparency = 1 end
+        end
         table.insert(arena.props, model)
-        Arena.animate(arena, i, winner == i)
     end
 end
 
@@ -482,7 +701,7 @@ function Arena.release(arena, index)
     local root = rig and rig:FindFirstChild("HumanoidRootPart")
     if root then
         root.Anchored = false
-        rig:PivotTo(CFrame.new(index == 1 and -4 or 4, 4, 15))
+        rig:PivotTo(CFrame.new(index == 1 and -4 or 4, 4, 22))
     end
     local humanoid = rig and rig:FindFirstChildOfClass("Humanoid")
     if humanoid then
@@ -499,15 +718,15 @@ return Arena
       </Properties>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="RBX10">
+  <Item class="StarterPlayer" referent="RBX11">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="RBX11">
+    <Item class="StarterPlayerScripts" referent="RBX12">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="RBX12">
+      <Item class="LocalScript" referent="RBX13">
         <Properties>
           <string name="Name">Interface</string>
           <ProtectedString name="Source">local Players = game:GetService("Players")
@@ -518,13 +737,15 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local shared = ReplicatedStorage:WaitForChild("HandClash")
 local Config = require(shared:WaitForChild("Config"))
+local Presentation = require(shared:WaitForChild("Presentation"))
+local presentation = Presentation.new(Config.RevealWindup)
 local remotes = shared:WaitForChild("Remotes")
 local action = remotes:WaitForChild("Action")
 local state = remotes:WaitForChild("State")
 
 local colors = {
-    bg = Color3.fromRGB(12, 16, 31), panel = Color3.fromRGB(26, 32, 54),
-    blue = Color3.fromRGB(66, 200, 255), pink = Color3.fromRGB(255, 101, 174),
+    bg = Color3.fromRGB(16, 22, 35), panel = Color3.fromRGB(27, 35, 53),
+    blue = Color3.fromRGB(118, 212, 240), pink = Color3.fromRGB(244, 158, 191),
     white = Color3.fromRGB(244, 247, 255), muted = Color3.fromRGB(161, 174, 203),
     gold = Color3.fromRGB(255, 210, 105), green = Color3.fromRGB(112, 244, 174),
 }
@@ -545,44 +766,53 @@ local function text(parent, value, size, position, fontSize, color, font)
         BackgroundTransparency = 1, Size = size, Position = position,
         Text = value, TextColor3 = color or colors.white,
         Font = font or Enum.Font.GothamBold, TextScaled = true, TextWrapped = true,
-        ZIndex = parent.ZIndex + 1,
+        ZIndex = parent.ZIndex + 1, BorderSizePixel = 0,
     }, parent)
     create("UITextSizeConstraint", { MinTextSize = 10, MaxTextSize = fontSize or 24 }, label)
     return label
 end
+local runningTweens = setmetatable({}, { __mode = "k" })
 local function tween(object, seconds, properties, style)
+    if runningTweens[object] then runningTweens[object]:Cancel() end
     local t = TweenService:Create(object, TweenInfo.new(seconds, style or Enum.EasingStyle.Quad, Enum.EasingDirection.Out), properties)
+    runningTweens[object] = t
     t:Play()
     return t
 end
 
 local gui = create("ScreenGui", { Name = "HandClashUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling }, player:WaitForChild("PlayerGui"))
 local shell = create("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, gui)
-local backdrop = create("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = colors.bg, BorderSizePixel = 0 }, shell)
-create("UIGradient", { Color = ColorSequence.new(colors.bg, Color3.fromRGB(35, 30, 66)), Rotation = 30 }, backdrop)
-for i = 1, 16 do
-    local dot = create("Frame", {
-        Size = UDim2.fromOffset(i % 3 == 0 and 6 or 3, i % 3 == 0 and 6 or 3),
-        Position = UDim2.fromScale(((i * 37) % 97) / 100, ((i * 23) % 93) / 100),
-        BackgroundColor3 = i % 2 == 0 and colors.blue or colors.pink,
-        BackgroundTransparency = 0.45, BorderSizePixel = 0,
-    }, backdrop)
-    round(dot, 10)
+local shown, homes = {}, {}
+local function show(panel, visible)
+    if shown[panel] == visible then return end
+    shown[panel] = visible
+    homes[panel] = homes[panel] or panel.Position
+    local home = homes[panel]
+    if visible then
+        panel.Visible, panel.GroupTransparency = true, 1
+        panel.Position = home + UDim2.fromOffset(0, 10)
+        tween(panel, 0.3, { GroupTransparency = 0, Position = home }, Enum.EasingStyle.Quart)
+    else
+        local fade = tween(panel, 0.2, { GroupTransparency = 1, Position = home + UDim2.fromOffset(0, 8) })
+        fade.Completed:Connect(function()
+            if not shown[panel] then panel.Visible = false end
+        end)
+    end
 end
 
-local lobby = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromScale(0.9, 0.88), BackgroundColor3 = colors.panel, ZIndex = 2,
+local lobby = create("CanvasGroup", {
+    Visible = false, AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -18, 1, -18),
+    Size = UDim2.fromOffset(360, 370), BackgroundColor3 = colors.panel, BackgroundTransparency = 0.12, ZIndex = 3,
 }, shell)
-create("UISizeConstraint", { MaxSize = Vector2.new(680, 490) }, lobby)
 round(lobby, 24)
-stroke(lobby, colors.blue, 0.7)
-text(lobby, "THE SMALLEST DUEL. THE BIGGEST ENERGY.", UDim2.fromScale(0.9, 0.06), UDim2.fromScale(0.05, 0.06), 13, colors.blue)
-text(lobby, Config.Title, UDim2.fromScale(0.9, 0.16), UDim2.fromScale(0.05, 0.13), 54, colors.white, Enum.Font.GothamBlack)
-text(lobby, "ROCK  •  PAPER  •  SCISSORS", UDim2.fromScale(0.9, 0.07), UDim2.fromScale(0.05, 0.3), 20, colors.pink)
-text(lobby, "Two rivals. One choice. First to " .. Config.PointsToWin .. " points wins.", UDim2.fromScale(0.88, 0.08), UDim2.fromScale(0.06, 0.38), 16, colors.muted, Enum.Font.Gotham)
+stroke(lobby, colors.white, 0.88)
+text(lobby, "Welcome to the lounge", UDim2.fromScale(0.77, 0.06), UDim2.fromScale(0.06, 0.07), 13, colors.blue)
+text(lobby, Config.Title, UDim2.fromScale(0.88, 0.15), UDim2.fromScale(0.06, 0.16), 38, colors.white, Enum.Font.GothamBlack)
+text(lobby, "A little luck. A little strategy.", UDim2.fromScale(0.88, 0.07), UDim2.fromScale(0.06, 0.32), 16, colors.pink)
+text(lobby, "First to " .. Config.PointsToWin .. " points. Ready when you are.", UDim2.fromScale(0.88, 0.07), UDim2.fromScale(0.06, 0.41), 14, colors.muted, Enum.Font.Gotham)
 
 local current = { phase = "lobby" }
+local menuOpen = true
 local controls
 task.spawn(function()
     local module = player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule", 10)
@@ -594,46 +824,64 @@ end)
 local selected, lastSent = nil, -math.huge
 local function request(kind, payload)
     local now = os.clock()
-    if now - lastSent &lt; 0.15 then return end
+    if now - lastSent &lt; 0.15 then return false end
     lastSent = now
     action:FireServer(kind, payload)
+    return true
 end
 local function button(parent, title, size, position, color, callback)
     local b = create("TextButton", {
         Size = size, Position = position, BackgroundColor3 = color,
-        Text = title, Font = Enum.Font.GothamBlack, TextColor3 = colors.bg,
-        TextScaled = true, AutoButtonColor = false, ZIndex = parent.ZIndex + 1,
+        Text = title, Font = Enum.Font.GothamBold, TextColor3 = colors.bg,
+        TextScaled = true, AutoButtonColor = false, ZIndex = parent.ZIndex + 1, BorderSizePixel = 0,
     }, parent)
     round(b, 14)
-    create("UITextSizeConstraint", { MinTextSize = 12, MaxTextSize = 22 }, b)
+    create("UIGradient", { Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(213, 221, 233)), Rotation = 90 }, b)
+    create("UITextSizeConstraint", { MinTextSize = 11, MaxTextSize = 18 }, b)
     local scale = create("UIScale", { Scale = 1 }, b)
-    b.MouseEnter:Connect(function() if b.Active then tween(scale, 0.12, { Scale = 1.025 }) end end)
-    b.MouseLeave:Connect(function() tween(scale, 0.12, { Scale = 1 }) end)
+    b.MouseEnter:Connect(function() if b.Active then tween(scale, 0.18, { Scale = 1.02 }, Enum.EasingStyle.Sine) end end)
+    b.MouseLeave:Connect(function() tween(scale, 0.2, { Scale = 1 }, Enum.EasingStyle.Sine) end)
     b.Activated:Connect(function()
         if not b.Active then return end
-        tween(scale, 0.08, { Scale = 0.96 })
-        task.delay(0.08, function() if b.Parent then tween(scale, 0.16, { Scale = 1 }) end end)
+        tween(scale, 0.09, { Scale = 0.97 })
+        task.delay(0.09, function() if b.Parent then tween(scale, 0.24, { Scale = 1 }, Enum.EasingStyle.Quart) end end)
         callback()
     end)
     return b
 end
-local practice = button(lobby, "PRACTICE  /  VS ROBO", UDim2.fromScale(0.88, 0.15), UDim2.fromScale(0.06, 0.51), colors.blue, function() request("Practice") end)
-local versus = button(lobby, "FIND A PLAYER", UDim2.fromScale(0.88, 0.15), UDim2.fromScale(0.06, 0.69), colors.pink, function() request("Queue") end)
+button(lobby, "Practice with ROBO", UDim2.fromScale(0.88, 0.15), UDim2.fromScale(0.06, 0.52), colors.blue, function() request("Practice") end)
+button(lobby, "Find a match", UDim2.fromScale(0.88, 0.15), UDim2.fromScale(0.06, 0.7), colors.pink, function() request("Queue") end)
 local lobbyNote = text(lobby, "Rock beats scissors. Scissors beats paper. Paper beats rock.", UDim2.fromScale(0.88, 0.07), UDim2.fromScale(0.06, 0.89), 13, colors.muted, Enum.Font.Gotham)
+button(lobby, "×", UDim2.fromScale(0.08, 0.08), UDim2.fromScale(0.86, 0.05), colors.panel, function()
+    menuOpen = false
+    show(lobby, false)
+end).TextColor3 = colors.muted
 
-local queuePanel = create("Frame", {
-    Visible = false, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromScale(0.88, 0.58), BackgroundColor3 = colors.panel, ZIndex = 3,
+local lobbyHud = create("CanvasGroup", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 2 }, shell)
+local brand = create("Frame", { Position = UDim2.fromOffset(16, 12), Size = UDim2.fromOffset(230, 60), BackgroundColor3 = colors.panel, BackgroundTransparency = 0.16, BorderSizePixel = 0 }, lobbyHud)
+round(brand, 18)
+text(brand, Config.Title, UDim2.fromScale(0.88, 0.48), UDim2.fromScale(0.06, 0.09), 24)
+text(brand, "Rock. Paper. Scissors.", UDim2.fromScale(0.88, 0.26), UDim2.fromScale(0.06, 0.63), 12, colors.muted, Enum.Font.Gotham)
+local menuToggle = button(lobbyHud, "Play", UDim2.new(0, 90, 0, 44), UDim2.new(1, -106, 0, 18), colors.blue, function()
+    if current.phase == "queued" then return end
+    menuOpen = not menuOpen
+    show(lobby, menuOpen)
+end)
+local exploreHint = text(lobbyHud, "Explore the lounge, or visit a kiosk to play.", UDim2.new(0.66, 0, 0, 24), UDim2.new(0.17, 0, 1, -32), 13, colors.white, Enum.Font.Gotham)
+
+local queuePanel = create("CanvasGroup", {
+    Visible = false, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 88),
+    Size = UDim2.new(0.92, 0, 0, 96), BackgroundColor3 = colors.panel, BackgroundTransparency = 0.1, ZIndex = 3,
 }, shell)
-create("UISizeConstraint", { MaxSize = Vector2.new(560, 320) }, queuePanel)
-round(queuePanel, 24)
-stroke(queuePanel, colors.pink)
-local queueTitle = text(queuePanel, "FINDING YOUR RIVAL", UDim2.fromScale(0.9, 0.22), UDim2.fromScale(0.05, 0.1), 30)
-text(queuePanel, "Keep this window open. A duel starts when another player joins the queue.", UDim2.fromScale(0.86, 0.22), UDim2.fromScale(0.07, 0.35), 17, colors.muted, Enum.Font.Gotham)
-button(queuePanel, "CANCEL", UDim2.fromScale(0.86, 0.22), UDim2.fromScale(0.07, 0.68), colors.pink, function() request("Leave") end)
+create("UISizeConstraint", { MaxSize = Vector2.new(580, 96) }, queuePanel)
+round(queuePanel, 18)
+stroke(queuePanel, colors.pink, 0.7)
+local queueTitle = text(queuePanel, "Finding an opponent", UDim2.fromScale(0.7, 0.25), UDim2.fromScale(0.04, 0.12), 18)
+text(queuePanel, "You're in line. Explore the lounge while you wait.", UDim2.fromScale(0.7, 0.4), UDim2.fromScale(0.04, 0.44), 13, colors.muted, Enum.Font.Gotham)
+button(queuePanel, "Cancel", UDim2.fromScale(0.18, 0.58), UDim2.fromScale(0.78, 0.2), colors.pink, function() request("Leave") end)
 
 local duel = create("Frame", { Visible = false, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 2 }, shell)
-local scoreboard = create("Frame", {
+local scoreboard = create("CanvasGroup", {
     AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 12),
     Size = UDim2.new(0.94, 0, 0, 80), BackgroundColor3 = colors.panel, BackgroundTransparency = 0.08,
 }, duel)
@@ -644,8 +892,9 @@ local myName = text(scoreboard, "YOU", UDim2.fromScale(0.3, 0.34), UDim2.fromSca
 local theirName = text(scoreboard, "RIVAL", UDim2.fromScale(0.3, 0.34), UDim2.fromScale(0.67, 0.12), 16, colors.pink)
 local myScore = text(scoreboard, "0", UDim2.fromScale(0.3, 0.45), UDim2.fromScale(0.03, 0.48), 30, colors.white, Enum.Font.GothamBlack)
 local theirScore = text(scoreboard, "0", UDim2.fromScale(0.3, 0.45), UDim2.fromScale(0.67, 0.48), 30, colors.white, Enum.Font.GothamBlack)
-local roundText = text(scoreboard, "ROUND 1", UDim2.fromScale(0.3, 0.35), UDim2.fromScale(0.35, 0.16), 16, colors.white)
-text(scoreboard, "FIRST TO " .. Config.PointsToWin, UDim2.fromScale(0.3, 0.25), UDim2.fromScale(0.35, 0.58), 11, colors.muted)
+local roundText = text(scoreboard, "Round 1", UDim2.fromScale(0.3, 0.35), UDim2.fromScale(0.35, 0.16), 16, colors.white)
+text(scoreboard, "First to " .. Config.PointsToWin, UDim2.fromScale(0.3, 0.25), UDim2.fromScale(0.35, 0.58), 11, colors.muted)
+local scoreScales = { create("UIScale", { Scale = 1 }, myScore), create("UIScale", { Scale = 1 }, theirScore) }
 
 local timerTrack = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 102),
@@ -656,26 +905,25 @@ local timerFill = create("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColo
 round(timerFill, 5)
 local timerLabel = text(duel, "7s", UDim2.new(0.2, 0, 0, 22), UDim2.new(0.4, 0, 0, 114), 15, colors.white)
 
-local choicesPanel = create("Frame", {
+local choicesPanel = create("CanvasGroup", {
     AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -12),
     Size = UDim2.new(0.94, 0, 0, 174), BackgroundColor3 = colors.panel, BackgroundTransparency = 0.07,
 }, duel)
 create("UISizeConstraint", { MaxSize = Vector2.new(760, 174) }, choicesPanel)
 round(choicesPanel, 20)
 stroke(choicesPanel, colors.white, 0.87)
-local status = text(choicesPanel, "MAKE YOUR MOVE", UDim2.fromScale(0.94, 0.16), UDim2.fromScale(0.03, 0.04), 20)
+local status = text(choicesPanel, "Choose your move", UDim2.fromScale(0.94, 0.16), UDim2.fromScale(0.03, 0.04), 20)
 local hint = text(choicesPanel, "Your choice stays secret until the reveal.", UDim2.fromScale(0.94, 0.12), UDim2.fromScale(0.03, 0.21), 12, colors.muted, Enum.Font.Gotham)
 local choiceButtons = {}
 local choiceLabels = {}
 local keys = { Rock = "1", Paper = "2", Scissors = "3" }
 local function choose(choice)
     if current.phase ~= "choosing" or current.myReady then return end
-    selected = choice
-    request("Choice", { choice = choice, round = current.round, matchId = current.matchId })
+    if request("Choice", { choice = choice, round = current.round, matchId = current.matchId }) then selected = choice end
 end
 for i, choice in ipairs(Config.Choices) do
     local b = button(choicesPanel, "", UDim2.fromScale(0.29, 0.4), UDim2.fromScale(0.04 + (i - 1) * 0.315, 0.37), i == 1 and colors.blue or (i == 2 and colors.white or colors.pink), function() choose(choice) end)
-    choiceLabels[choice] = text(b, choice:upper() .. "  [" .. keys[choice] .. "]", UDim2.fromScale(0.92, 0.33), UDim2.fromScale(0.04, 0.59), 16, colors.bg)
+    choiceLabels[choice] = text(b, choice .. "  [" .. keys[choice] .. "]", UDim2.fromScale(0.92, 0.33), UDim2.fromScale(0.04, 0.59), 16, colors.bg)
     local icon = create("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.29),
         Size = UDim2.fromScale(0.8, 0.46), BackgroundTransparency = 1,
@@ -711,25 +959,31 @@ for i, choice in ipairs(Config.Choices) do
     end
     choiceButtons[choice] = b
 end
-local leave = button(choicesPanel, "LEAVE", UDim2.fromScale(0.19, 0.13), UDim2.fromScale(0.77, 0.83), colors.panel, function() request("Leave") end)
+local leave = button(choicesPanel, "Leave match", UDim2.fromScale(0.23, 0.15), UDim2.fromScale(0.73, 0.82), colors.panel, function() request("Leave") end)
 leave.TextColor3 = colors.muted
-text(choicesPanel, "CLICK, TAP, OR PRESS 1 / 2 / 3", UDim2.fromScale(0.69, 0.13), UDim2.fromScale(0.04, 0.83), 10, colors.muted, Enum.Font.Gotham)
+text(choicesPanel, "Tap a card or press 1, 2, or 3", UDim2.fromScale(0.65, 0.13), UDim2.fromScale(0.04, 0.83), 11, colors.muted, Enum.Font.Gotham)
 
-local resultCard = create("Frame", {
-    Visible = false, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45),
-    Size = UDim2.fromScale(0.75, 0.26), BackgroundColor3 = colors.bg, BackgroundTransparency = 0.1, ZIndex = 8,
+local resultCard = create("CanvasGroup", {
+    Visible = false, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 142),
+    Size = UDim2.new(0.82, 0, 0, 80), BackgroundColor3 = colors.bg, BackgroundTransparency = 0.15, ZIndex = 8,
 }, duel)
-create("UISizeConstraint", { MaxSize = Vector2.new(500, 150) }, resultCard)
-round(resultCard, 22)
+create("UISizeConstraint", { MaxSize = Vector2.new(460, 80) }, resultCard)
+round(resultCard, 18)
 local resultStroke = stroke(resultCard, colors.gold, 0.2)
-local resultTitle = text(resultCard, "YOU WIN!", UDim2.fromScale(0.9, 0.42), UDim2.fromScale(0.05, 0.15), 36, colors.gold, Enum.Font.GothamBlack)
-local resultDetail = text(resultCard, "Rock beats scissors", UDim2.fromScale(0.9, 0.26), UDim2.fromScale(0.05, 0.62), 17, colors.white)
+local resultTitle = text(resultCard, "Nice move!", UDim2.fromScale(0.9, 0.37), UDim2.fromScale(0.05, 0.12), 26, colors.gold, Enum.Font.GothamBold)
+local resultDetail = text(resultCard, "Rock beats scissors", UDim2.fromScale(0.9, 0.33), UDim2.fromScale(0.05, 0.56), 14, colors.white, Enum.Font.Gotham)
 local resultScale = create("UIScale", { Scale = 1 }, resultCard)
 
+local transitionVeil = create("Frame", {
+    Size = UDim2.fromScale(1, 1), BackgroundColor3 = colors.bg,
+    BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 30,
+}, shell)
 local cameraTween, cameraCenter
 local function setCamera(center)
     if cameraCenter == center then return end
     cameraCenter = center
+    transitionVeil.BackgroundTransparency = 0
+    tween(transitionVeil, 0.65, { BackgroundTransparency = 1 }, Enum.EasingStyle.Sine)
     local camera = workspace.CurrentCamera
     if cameraTween then cameraTween:Cancel() end
     if center then
@@ -737,7 +991,9 @@ local function setCamera(center)
         local target = CFrame.lookAt(center + Vector3.new(0, 10, 24), center + Vector3.new(0, 3, 0))
         -- Set immediately on the first match to avoid traveling through other arenas.
         camera.CFrame = target
-        cameraTween = tween(camera, 0.7, { CFrame = CFrame.lookAt(center + Vector3.new(0, 8, 21), center + Vector3.new(0, 3, 0)), FieldOfView = 55 })
+        local portrait = camera.ViewportSize.X &lt; camera.ViewportSize.Y
+        local distance = portrait and 33 or 23
+        cameraTween = tween(camera, 1.1, { CFrame = CFrame.lookAt(center + Vector3.new(0, 8, distance), center + Vector3.new(0, 3, 0)), FieldOfView = 55 }, Enum.EasingStyle.Sine)
     else
         camera.CameraType, camera.FieldOfView = Enum.CameraType.Custom, 70
         local character = player.Character
@@ -747,18 +1003,18 @@ local function setCamera(center)
 end
 
 local effects = create("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 15 }, shell)
-local function confetti()
-    for i = 1, 34 do
+local function confetti(isMatch)
+    for i = 1, isMatch and 32 or 14 do
         local chip = create("Frame", {
-            Size = UDim2.fromOffset(7 + i % 4, 12), Position = UDim2.fromScale(0.5, 0.4),
+            Size = UDim2.fromOffset(5 + i % 4, 10), Position = UDim2.fromScale(0.25 + (i % 11) * 0.05, -0.02),
             BackgroundColor3 = ({ colors.blue, colors.pink, colors.gold })[(i % 3) + 1],
             Rotation = i * 19, BorderSizePixel = 0,
         }, effects)
-        tween(chip, 1.3 + (i % 4) * 0.1, {
+        tween(chip, 1.8 + (i % 4) * 0.15, {
             Position = UDim2.fromScale((i % 12) / 11, 1.15), Rotation = i * 53,
             BackgroundTransparency = 1,
         })
-        task.delay(1.8, function() chip:Destroy() end)
+        task.delay(2.5, function() chip:Destroy() end)
     end
 end
 
@@ -767,54 +1023,93 @@ local function showResult(packet)
     local tie = packet.result == "tie"
     local color = tie and colors.blue or (win and colors.gold or colors.pink)
     resultTitle.TextColor3, resultStroke.Color = color, color
-    resultTitle.Text = packet.phase == "finished" and (tie and "MATCH DRAW!" or (win and "MATCH WON!" or "GOOD GAME!")) or (tie and "IT'S A TIE!" or (win and "YOU WIN!" or "RIVAL WINS!"))
-    resultDetail.Text = packet.phase == "finished" and (packet.reason .. " Returning to lobby…") or (packet.myChoice .. "  vs  " .. packet.opponentChoice)
-    resultCard.Visible, resultScale.Scale = true, 0.8
-    tween(resultScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
-    if win then confetti() end
+    resultTitle.Text = packet.phase == "finished" and (tie and "Match drawn" or (win and "You take the match!" or "Good game")) or (tie and "Same move. Go again!" or (win and "Nice move!" or "Their point. Next one's yours."))
+    resultDetail.Text = packet.phase == "finished" and "Heading back to the lounge shortly." or (packet.myChoice .. "  ·  " .. packet.opponentChoice)
+    resultScale.Scale = 0.96
+    show(resultCard, true)
+    tween(resultScale, 0.36, { Scale = 1 }, Enum.EasingStyle.Quart)
+    if win then confetti(packet.phase == "finished") end
 end
+
+local function updateScores(packet)
+    for i, item in ipairs({ { label = myScore, value = packet.myScore }, { label = theirScore, value = packet.opponentScore } }) do
+        local value = tostring(item.value)
+        if item.label.Text ~= value then
+            item.label.Text = value
+            scoreScales[i].Scale = 1.12
+            tween(scoreScales[i], 0.38, { Scale = 1 }, Enum.EasingStyle.Quart)
+        end
+    end
+end
+
+local queuedAt = 0
 
 state.OnClientEvent:Connect(function(packet)
     local newRound = packet.matchId ~= current.matchId or packet.round ~= current.round
     if newRound then selected = nil end
+    local previous = current
     current = packet
+    presentation:set(packet)
     local inDuel = packet.phase == "choosing" or packet.phase == "reveal" or packet.phase == "finished"
-    lobby.Visible = packet.phase == "lobby"
-    queuePanel.Visible = packet.phase == "queued"
-    backdrop.Visible = not inDuel
+    if packet.phase == "queued" and previous.phase ~= "queued" then queuedAt = os.clock(); menuOpen = false end
+    if packet.phase == "lobby" and previous.phase == "finished" then menuOpen = false end
+    if packet.message then menuOpen = true end
+    show(lobby, packet.phase == "lobby" and menuOpen)
+    show(lobbyHud, not inDuel)
+    show(queuePanel, packet.phase == "queued")
+    menuToggle.Active = packet.phase ~= "queued"
+    menuToggle.Text = packet.phase == "queued" and "In queue" or "Play"
     duel.Visible = inDuel
     if not inDuel then
         if controls then controls:Enable() end
         setCamera(nil)
         lobbyNote.Text = packet.message or "Rock beats scissors. Scissors beats paper. Paper beats rock."
+        exploreHint.Text = packet.phase == "queued" and "Your match starts automatically when someone joins." or "Explore the lounge, or visit a kiosk to play."
         return
     end
     if controls then controls:Disable() end
     setCamera(packet.camera)
-    myName.Text, theirName.Text = "YOU · " .. packet.me, packet.opponent
+    if previous.matchId ~= packet.matchId then
+        shown[scoreboard], shown[choicesPanel] = false, false
+        show(scoreboard, true)
+        show(choicesPanel, true)
+    end
+    myName.Text, theirName.Text = packet.me .. " (you)", packet.opponent
     local myX, theirX = packet.seat == 2 and 0.67 or 0.03, packet.seat == 2 and 0.03 or 0.67
     myName.Position, myScore.Position = UDim2.fromScale(myX, 0.12), UDim2.fromScale(myX, 0.48)
     theirName.Position, theirScore.Position = UDim2.fromScale(theirX, 0.12), UDim2.fromScale(theirX, 0.48)
     myName.TextColor3 = packet.seat == 2 and colors.pink or colors.blue
     theirName.TextColor3 = packet.seat == 2 and colors.blue or colors.pink
-    myScore.Text, theirScore.Text = tostring(packet.myScore), tostring(packet.opponentScore)
-    roundText.Text = "ROUND " .. packet.round
+    if packet.phase ~= "reveal" then updateScores(packet) end
+    roundText.Text = "Round " .. packet.round
     timerTrack.Visible, timerLabel.Visible = packet.phase == "choosing", packet.phase == "choosing"
-    resultCard.Visible = packet.phase == "reveal" or packet.phase == "finished"
+    show(resultCard, false)
     for choice, b in pairs(choiceButtons) do
         b.Active = packet.phase == "choosing" and not packet.myReady
-        b.BackgroundTransparency = b.Active and 0 or 0.55
-        choiceLabels[choice].Text = choice:upper() .. ((packet.myReady and selected == choice) and "  ✓" or "  [" .. keys[choice] .. "]")
+        if not b.Active then tween(b:FindFirstChildOfClass("UIScale"), 0.2, { Scale = 1 }) end
+        tween(b, 0.22, { BackgroundTransparency = b.Active and 0 or ((selected == choice) and 0.08 or 0.6) })
+        choiceLabels[choice].Text = choice .. ((packet.myReady and selected == choice) and "  ✓" or "  [" .. keys[choice] .. "]")
     end
     if packet.phase == "choosing" then
-        status.Text = packet.myReady and "CHOICE LOCKED" or "MAKE YOUR MOVE"
+        status.Text = packet.myReady and ((selected or "Move") .. " locked in") or "Choose your move"
         status.TextColor3 = packet.myReady and colors.green or colors.white
-        hint.Text = packet.opponentReady and "Your rival is ready. The reveal is coming…" or (packet.myReady and "Waiting for your rival…" or "Your choice stays secret until the reveal.")
+        hint.Text = packet.opponentReady and "Your opponent is ready." or (packet.myReady and "All set. Waiting for your opponent." or "Pick one. Your opponent won't see it yet.")
     else
-        status.Text = packet.phase == "finished" and "THANKS FOR PLAYING" or "THE REVEAL"
+        status.Text = packet.phase == "finished" and "See you in the lounge" or "Rock… paper… scissors…"
         status.TextColor3 = colors.white
-        hint.Text = packet.phase == "finished" and "Another duel is one click away." or "Next round starts in a moment."
-        showResult(packet)
+        hint.Text = packet.phase == "finished" and "Take a breather, then try another match." or "Here we go."
+        if packet.phase == "finished" then
+            showResult(packet)
+        else
+            local delay = math.max(0, Config.RevealWindup + 0.12 - (workspace:GetServerTimeNow() - packet.revealAt))
+            task.delay(delay, function()
+                if current.matchId == packet.matchId and current.round == packet.round and current.phase == "reveal" then
+                    updateScores(packet)
+                    status.Text, hint.Text = "Moves revealed", "Next round in a moment."
+                    showResult(packet)
+                end
+            end)
+        end
     end
 end)
 
@@ -824,27 +1119,47 @@ UserInputService.InputBegan:Connect(function(input, processed)
     if choice then choose(choice) end
 end)
 
-local elapsed = 0
 RunService.RenderStepped:Connect(function(dt)
-    elapsed = elapsed + dt
+    presentation:step(dt)
     if current.phase == "choosing" and current.deadline then
         local remaining = math.max(0, current.deadline - workspace:GetServerTimeNow())
-        timerLabel.Text = string.format("%.1fs", remaining)
+        timerLabel.Text = string.format("%ds to choose", math.ceil(remaining))
         timerFill.Size = UDim2.fromScale(math.clamp(remaining / Config.ChoiceSeconds, 0, 1), 1)
-        timerFill.BackgroundColor3 = remaining &lt; 2 and colors.pink or colors.blue
+        timerFill.BackgroundColor3 = colors.blue:Lerp(colors.pink, math.clamp((2 - remaining) / 2, 0, 1))
     elseif current.phase == "queued" then
-        queueTitle.Text = "FINDING YOUR RIVAL" .. string.rep(".", math.floor(elapsed * 2) % 4)
+        queueTitle.Text = string.format("Finding an opponent · %ds", math.floor(os.clock() - queuedAt))
+    elseif current.phase == "reveal" then
+        local revealTime = workspace:GetServerTimeNow() - current.revealAt
+        if revealTime &lt; Config.RevealWindup then
+            local beat = math.clamp(math.floor(revealTime / Config.RevealWindup * 3) + 1, 1, 3)
+            status.Text = ({ "Rock…", "Paper…", "Scissors!" })[beat]
+        end
     end
 end)
 
 -- Fit the controls around the arena on short mobile displays.
 local function resize()
-    local height = workspace.CurrentCamera.ViewportSize.Y
+    local viewport = workspace.CurrentCamera.ViewportSize
+    local height, width = viewport.Y, viewport.X
     local compact = height &lt; 500
     scoreboard.Size = UDim2.new(0.94, 0, 0, compact and 62 or 80)
     timerTrack.Position = UDim2.new(0.5, 0, 0, compact and 82 or 102)
     timerLabel.Position = UDim2.new(0.4, 0, 0, compact and 92 or 114)
     choicesPanel.Size = UDim2.new(0.94, 0, 0, compact and 134 or 174)
+    resultCard.Position = UDim2.new(0.5, 0, 0, compact and 100 or 142)
+    resultCard.Size = UDim2.new(0.82, 0, 0, compact and 65 or 80)
+    local mobile = width &lt; 700 or compact
+    lobby.Size = UDim2.fromOffset(math.min(360, width - 28), math.min(compact and 250 or 370, height - 96))
+    lobby.AnchorPoint = mobile and Vector2.new(0.5, 0) or Vector2.new(1, 1)
+    lobby.Position = mobile and UDim2.new(0.5, 0, 0, 82) or UDim2.new(1, -18, 1, -18)
+    homes[lobby], homes[resultCard] = lobby.Position, resultCard.Position
+    brand.Size = UDim2.fromOffset(math.min(230, width - 142), 60)
+    exploreHint.Visible = not compact
+    if cameraCenter then
+        local center = cameraCenter
+        cameraCenter = nil
+        setCamera(center)
+    end
 end
 workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(resize)
 resize()
