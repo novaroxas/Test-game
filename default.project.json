@@ -1,0 +1,22 @@
+{
+  "name": "Hand Clash",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "HandClash": { "$path": "src/shared" }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "Game": { "$path": "src/server/Game.server.lua" },
+      "Arena": { "$path": "src/server/Arena.lua" }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "Interface": { "$path": "src/client/Interface.client.lua" }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+build/*
+!build/HandClash.rbxlx
+*.rbxl
+*.rbxl.lock
+*.rbxlx.lock
+__pycache__/
